@@ -3,8 +3,10 @@ venv/
 .env/
 .env
 env
-
-
+booking.db
+booking.db/
+database.py
+database
 # Python cache
 __pycache__/
 *.pyc

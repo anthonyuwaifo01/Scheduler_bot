@@ -540,3 +540,22 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+from telegram.ext import Application
+from telegram.request import HTTPXRequest
+
+request = HTTPXRequest(
+    connect_timeout=10,
+    read_timeout=20,
+    write_timeout=20,
+    pool_timeout=20
+)
+
+application = (
+    Application.builder()
+    .token(BOT_TOKEN)
+    .request(request)
+    .build()
+)
+
