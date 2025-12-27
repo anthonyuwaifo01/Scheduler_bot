@@ -10,6 +10,27 @@ import logging
 from database import Database
 from config import BOT_TOKEN, ADMIN_TELEGRAM_ID
 
+import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        return  # disable logging
+
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+
+def start_health_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server.serve_forever()
+
+threading.Thread(target=start_health_server, daemon=True).start()
+
+
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -506,8 +527,23 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Start the bot"""
-    application = Application.builder().token(BOT_TOKEN).build()
-    
+
+    from telegram.request import HTTPXRequest
+
+    request = HTTPXRequest(
+        connect_timeout=10,
+        read_timeout=20,
+        write_timeout=20,
+        pool_timeout=20
+    )
+
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .request(request)
+        .build()
+    )
+
     # Booking conversation
     conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_booking, pattern='^book$')],
@@ -520,42 +556,29 @@ def main():
         },
         fallbacks=[CommandHandler('cancel', cancel)],
     )
-    
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(conv_handler)
     application.add_handler(CallbackQueryHandler(button_handler, pattern='^(mybookings|admin|back)$'))
     application.add_handler(CallbackQueryHandler(admin_today, pattern='^admin_today$'))
     application.add_handler(CallbackQueryHandler(admin_tomorrow, pattern='^admin_tomorrow$'))
     application.add_handler(CallbackQueryHandler(admin_forward, pattern='^admin_forward$'))
-    
-    # Handle forward ID input
-    application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND & filters.User(user_id=ADMIN_TELEGRAM_ID),
-        handle_forward_id
-    ))
-    
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND & filters.User(user_id=ADMIN_TELEGRAM_ID),
+            handle_forward_id
+        )
+    )
+
     logger.info("Simple MVP Bot started...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+    application.run_polling(
+        poll_interval=3,
+        timeout=20,
+        drop_pending_updates=True
+    )
 
 
 if __name__ == '__main__':
     main()
-
-
-from telegram.ext import Application
-from telegram.request import HTTPXRequest
-
-request = HTTPXRequest(
-    connect_timeout=10,
-    read_timeout=20,
-    write_timeout=20,
-    pool_timeout=20
-)
-
-application = (
-    Application.builder()
-    .token(BOT_TOKEN)
-    .request(request)
-    .build()
-)
-
