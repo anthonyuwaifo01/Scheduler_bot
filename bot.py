@@ -3,6 +3,7 @@ Simple Scheduler Bot MVP
 Basic booking system - Name, Phone, Service, Time
 """
 
+from email.mime import application
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ConversationHandler, ContextTypes, filters
 from datetime import datetime, timedelta
@@ -304,6 +305,8 @@ async def time_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     return ConversationHandler.END
 
+async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    print("Telegram error:", context.error)
 
 async def show_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show user's bookings"""
@@ -544,6 +547,7 @@ def main():
         .build()
     )
 
+
     # Booking conversation
     conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_booking, pattern='^book$')],
@@ -572,6 +576,8 @@ def main():
     )
 
     logger.info("Simple MVP Bot started...")
+
+    application.add_error_handler(error_handler)
 
     application.run_polling(
         poll_interval=3,
