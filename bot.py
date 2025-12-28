@@ -1,44 +1,42 @@
 """
-Simple Scheduler Bot MVP
-Basic booking system - Name, Phone, Service, Time
+Scheduler Bot - Webhook Version
+Booking system with FastAPI webhooks for better Render performance
 """
 
-from email.mime import application
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ConversationHandler, ContextTypes, filters
-from datetime import datetime, timedelta
+import os
 import logging
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+
+from fastapi import FastAPI, Request
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    ConversationHandler,
+    ContextTypes,
+    filters
+)
+
 from database import Database
 from config import BOT_TOKEN, ADMIN_TELEGRAM_ID
 
-import os
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+# Configuration
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # Set this in Render: https://yourapp.onrender.com
 
-class HealthHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        return  # disable logging
-
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"OK")
-
-def start_health_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
-    server.serve_forever()
-
-threading.Thread(target=start_health_server, daemon=True).start()
-
-
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# Logging
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 # Conversation states
 GET_NAME, GET_PHONE, SELECT_SERVICE, SELECT_DATE, SELECT_TIME = range(5)
 
-# Simple services
+# Services configuration
 SERVICES = {
     'haircut': {'name': 'Haircut', 'duration': 30, 'price': 25},
     'beard': {'name': 'Beard Trim', 'duration': 20, 'price': 15},
@@ -49,8 +47,11 @@ SERVICES = {
 BUSINESS_HOURS = {'start': 9, 'end': 18}  # 9 AM to 6 PM
 CLOSED_DAYS = [6]  # Sunday
 
+# Database
 db = Database()
 
+
+# ==================== Command Handlers ====================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start command"""
@@ -102,6 +103,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
 
+
+# ==================== Booking Flow ====================
 
 async def start_booking(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start booking - ask for name"""
@@ -305,8 +308,14 @@ async def time_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     return ConversationHandler.END
 
-async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
-    print("Telegram error:", context.error)
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel conversation"""
+    await update.message.reply_text("❌ Cancelled. Use /start to begin again.")
+    return ConversationHandler.END
+
+
+# ==================== My Bookings ====================
 
 async def show_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show user's bookings"""
@@ -345,6 +354,8 @@ async def show_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await query.edit_message_text(message, reply_markup=reply_markup, parse_mode='Markdown')
 
+
+# ==================== Admin Panel ====================
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin panel"""
@@ -522,69 +533,87 @@ async def handle_forward_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancel conversation"""
-    await update.message.reply_text("❌ Cancelled. Use /start to begin again.")
-    return ConversationHandler.END
+# ==================== Error Handler ====================
+
+async def error_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    """Log errors"""
+    logger.error(f"Update {update} caused error {context.error}")
 
 
-def main():
-    """Start the bot"""
+# ==================== Build Telegram Application ====================
 
-    from telegram.request import HTTPXRequest
+app_bot = Application.builder().token(BOT_TOKEN).build()
 
-    request = HTTPXRequest(
-        connect_timeout=10,
-        read_timeout=20,
-        write_timeout=20,
-        pool_timeout=20
+# Conversation handler for booking flow
+conv_handler = ConversationHandler(
+    entry_points=[CallbackQueryHandler(start_booking, pattern='^book$')],
+    states={
+        GET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
+        GET_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_phone)],
+        SELECT_SERVICE: [CallbackQueryHandler(service_selected, pattern='^service_')],
+        SELECT_DATE: [CallbackQueryHandler(date_selected, pattern='^date_')],
+        SELECT_TIME: [CallbackQueryHandler(time_selected, pattern='^time_')],
+    },
+    fallbacks=[CommandHandler('cancel', cancel)],
+)
+
+# Add all handlers
+app_bot.add_handler(CommandHandler("start", start))
+app_bot.add_handler(conv_handler)
+app_bot.add_handler(CallbackQueryHandler(button_handler, pattern='^(mybookings|admin|back)$'))
+app_bot.add_handler(CallbackQueryHandler(admin_today, pattern='^admin_today$'))
+app_bot.add_handler(CallbackQueryHandler(admin_tomorrow, pattern='^admin_tomorrow$'))
+app_bot.add_handler(CallbackQueryHandler(admin_forward, pattern='^admin_forward$'))
+app_bot.add_handler(
+    MessageHandler(
+        filters.TEXT & ~filters.COMMAND & filters.User(user_id=ADMIN_TELEGRAM_ID),
+        handle_forward_id
     )
-
-    application = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .request(request)
-        .build()
-    )
+)
+app_bot.add_error_handler(error_handler)
 
 
-    # Booking conversation
-    conv_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(start_booking, pattern='^book$')],
-        states={
-            GET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
-            GET_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_phone)],
-            SELECT_SERVICE: [CallbackQueryHandler(service_selected, pattern='^service_')],
-            SELECT_DATE: [CallbackQueryHandler(date_selected, pattern='^date_')],
-            SELECT_TIME: [CallbackQueryHandler(time_selected, pattern='^time_')],
-        },
-        fallbacks=[CommandHandler('cancel', cancel)],
-    )
+# ==================== FastAPI Setup ====================
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(conv_handler)
-    application.add_handler(CallbackQueryHandler(button_handler, pattern='^(mybookings|admin|back)$'))
-    application.add_handler(CallbackQueryHandler(admin_today, pattern='^admin_today$'))
-    application.add_handler(CallbackQueryHandler(admin_tomorrow, pattern='^admin_tomorrow$'))
-    application.add_handler(CallbackQueryHandler(admin_forward, pattern='^admin_forward$'))
-
-    application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND & filters.User(user_id=ADMIN_TELEGRAM_ID),
-            handle_forward_id
-        )
-    )
-
-    logger.info("Simple MVP Bot started...")
-
-    application.add_error_handler(error_handler)
-
-    application.run_polling(
-        poll_interval=3,
-        timeout=20,
-        drop_pending_updates=True
-    )
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup and shutdown events"""
+    # Startup: Initialize bot and set webhook
+    await app_bot.initialize()
+    await app_bot.start()
+    webhook_url = f"{WEBHOOK_URL}/webhook"
+    await app_bot.bot.set_webhook(url=webhook_url)
+    logger.info(f"✅ Webhook set to {webhook_url}")
+    
+    yield
+    
+    # Shutdown: Stop bot
+    await app_bot.stop()
+    await app_bot.shutdown()
 
 
-if __name__ == '__main__':
-    main()
+# Create FastAPI app
+app = FastAPI(lifespan=lifespan)
+
+
+@app.post("/webhook")
+async def telegram_webhook(request: Request):
+    """Handle incoming webhook updates from Telegram"""
+    data = await request.json()
+    update = Update.de_json(data, app_bot.bot)
+    await app_bot.process_update(update)
+    return {"ok": True}
+
+
+@app.get("/")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "ok", "bot": "scheduler"}
+
+
+# ==================== Run Application ====================
+
+if __name__ == "__main__":
+    import uvicorn
+    PORT = int(os.environ.get("PORT", 10000))
+    uvicorn.run("bot:app", host="0.0.0.0", port=PORT, log_level="info")
